@@ -1,0 +1,18 @@
+[tool.poetry]
+name = "vectorfriends-diffbot-ingest"
+version = "0.1.0"
+description = ""
+authors = ["jalakoo <jalakoo@gmail.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.12"
+functions-framework = "^3.8.1"
+basicauth = "^1.0.0"
+neo4j-rust-ext = "^5.23.1.0"
+pydantic = "^2.8.2"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
