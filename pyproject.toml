@@ -11,6 +11,7 @@ functions-framework = "^3.8.1"
 basicauth = "^1.0.0"
 neo4j-rust-ext = "^5.23.1.0"
 pydantic = "^2.8.2"
+openai = "^1.43.0"
 
 
 [build-system]
