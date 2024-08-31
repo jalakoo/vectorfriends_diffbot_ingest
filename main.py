@@ -1,6 +1,7 @@
 from basicauth import decode
 from typing import List, Optional
 from neo4j import GraphDatabase, basic_auth
+from neo4j.exceptions import ClientError
 from pydantic import BaseModel, Field
 import functions_framework
 from openai import OpenAI
@@ -77,7 +78,7 @@ CLIENT = OpenAI(
     api_key=OPENAI_KEY,
 )
 
-def extract_topics(sentence: str) -> list[str]:
+def extract_tech(sentence: str) -> list[str]:
 
     # Return empty list if sentence is empty
     if not sentence or sentence.strip() == "":
@@ -143,14 +144,11 @@ def extract_topics(sentence: str) -> list[str]:
     return extracted
 
 def execute_query(query, params):
-    try:
-        with GraphDatabase.driver(
-            HOST, auth=basic_auth(USER, PASSWORD), database=DATABASE
-        ) as driver:
-            return driver.execute_query(query, params)
-    except Exception as e:
-        print(f"Upload query error: {e}")
-        return None
+    with GraphDatabase.driver(
+        HOST, auth=basic_auth(USER, PASSWORD), database=DATABASE
+    ) as driver:
+        return driver.execute_query(query, params)
+
 
 
 def ingest(dbd: DiffBotData, tenant_id: str):
@@ -163,8 +161,17 @@ def ingest(dbd: DiffBotData, tenant_id: str):
     params = {"tenant_id": tenant_id}
     try:
         execute_query(query, params)
+    except ClientError as e:
+        if e.code == ClientError.Schema.ConstraintValidationFailed:
+            # Log the constraint validation error and proceed without raising an exception
+            print(f"A tenant with name '{tenant_id}' already exists.")
+            pass
+        else:
+            # If it's a different ClientError, handle it as usual
+            print(f"Error creating tenant node for tenant '{tenant_id}': {e}")
+            return "Error creating tenant node", 500
     except Exception as e:
-        print(f"Error creating tenant node: {e}")
+        print(f"Error creating tenant node for tenant '{tenant_id}': {e}")
         return "Error creating tenant node", 500
 
     # Create a user node
@@ -180,14 +187,23 @@ def ingest(dbd: DiffBotData, tenant_id: str):
     }
     try:
         execute_query(query, params)
+    except ClientError as e:
+        if e.code == ClientError.Schema.ConstraintValidationFailed:
+            # Log the constraint validation error and proceed without raising an exception
+            print(f"A user with a diffbotUri '{dbd.data[0].entity.diffbotUri}' already exists.")
+            pass
+        else:
+            # If it's a different ClientError, handle it as usual
+            print(f"Error creating user node for tenant '{tenant_id}': {e}")
+            return "Error creating user node", 500
     except Exception as e:
-        print(f"Error creating user node: {e}")
+        print(f"Error creating user node from diffbot data: {dbd}: {e}")
         return "Error creating user node", 500
 
     # Create a user-tenant relationship
     query = """
-    MATCH (u:User {diffbotUri: $diffbotUri})
-    MERGE (u)-[:ATTENDED]->(t:Tenant {name: $tenant_id})
+    MATCH (u:User {diffbotUri: $diffbotUri}), (t:Tenant {name: $tenant_id})
+    MERGE (u)-[:ATTENDED]->(t)
     """
     params = {
         "diffbotUri": dbd.data[0].entity.diffbotUri,
@@ -199,31 +215,31 @@ def ingest(dbd: DiffBotData, tenant_id: str):
         print(f"Error creating user-tenant relationship: {e}")
         return "Error creating user-tenant relationship", 500
 
-    # Extract topics from user description
-    topics = extract_topics(dbd.data[0].entity.description)
+    # Extract tech from user description
+    user_tech = extract_tech(dbd.data[0].entity.description)
     query = """
-    UNWIND $topics AS topic
-    MERGE (t:Topic {name: topic})
+    UNWIND $user_tech AS tech
+    MERGE (t:Tech {name: tech})
     """
     params = {
-        "topics": topics,
+        "user_tech": user_tech,
     }
     try:
         execute_query(query, params)
     except Exception as e:
-        print(f"Error creating topic nodes: {e}")
-        return "Error creating topic nodes", 500
+        print(f"Error creating user_tech nodes: {e}")
+        return "Error creating user_tech nodes", 500
     
 
-    # Create User-Topic relationships
+    # Create User-Tech relationships
     query = """
-    UNWIND $topics AS topic
-    MATCH (u:User {diffbotUri: $diffbotUri}), (t:Topic {name: topic})
+    UNWIND $user_tech AS tech
+    MATCH (u:User {diffbotUri: $diffbotUri}), (t:TEch {name: tech})
     MERGE (u)-[:KNOWS]->(t)
     """
     params = {
         "diffbotUri": dbd.data[0].entity.diffbotUri,
-        "topics": topics,
+        "user_tech": user_tech,
     }
 
     try:
@@ -250,15 +266,14 @@ def ingest(dbd: DiffBotData, tenant_id: str):
 
     # Create a list of tuples with employer name and tech topics from employer descriptions
     employer_tech = [
-        (e.employer.name, extract_topics(e.description))
+        (e.employer.name, extract_tech(e.description))
         for e in dbd.data[0].entity.employments
         if e.employer is not None
     ]
-    print(f'Employer tech: {employer_tech}')
 
     # Create a list of tuples with title and tech topics from title
     title_tech = [
-        (e.title, extract_topics(e.title))
+        (e.title, extract_tech(e.title))
         for e in dbd.data[0].entity.employments
     ]
 
@@ -351,16 +366,47 @@ def ingest(dbd: DiffBotData, tenant_id: str):
         print(f"Error creating role relationships: {e}")
         return "Error creating role relationships", 500
 
-    # TODOS:
-    # Create Location Nodes
-
-    # Create location relationships
-
-    return "OK", 200
+    response_string = f"Successfully processed {dbd.data[0].entity.nameDetail.firstName}"
+    return response_string, 200
 
 
+# @functions_framework.http
+# def import_diffbot(request):
+
+#     # Optional Basic Auth
+#     basic_user = os.environ.get("BASIC_AUTH_USER", None)
+#     basic_password = os.environ.get("BASIC_AUTH_PASSWORD", None)
+#     if basic_user and basic_password:
+#         auth_header = request.headers.get("Authorization")
+#         if auth_header is None:
+#             return "Missing authorization credentials", 401
+#         try:
+#             request_username, request_password = decode(auth_header)
+#             if request_username != basic_user or request_password != basic_password:
+#                 return "Unauthorized", 401
+#         except Exception as e:
+#             logging.error(
+#                 f"Problem parsing authorization header: {auth_header}: ERROR: {e}"
+#             )
+#             return f"Problem with Authorization credentials: {e}", 400
+
+#     payload = request.get_json(silent=True)
+
+#     if payload:
+#         try:
+#             ddata = DiffBotData(**payload)
+#             queries = request.args
+#             tenant_id = queries.get("tenant_id", None)
+#             if tenant_id is None:
+#                 tenant_id = os.environ.get("TENANT_ID", None)
+#             return ingest(ddata, tenant_id)
+#         except Exception as e:
+#             return f"Invalid payload: {e}", 400
+
+
+# import_diffbot function that processes a JSON list of diffbot data
 @functions_framework.http
-def import_diffbot(request):
+def import_diffbot_list(request):
 
     # Optional Basic Auth
     basic_user = os.environ.get("BASIC_AUTH_USER", None)
@@ -381,13 +427,21 @@ def import_diffbot(request):
 
     payload = request.get_json(silent=True)
 
-    if payload:
+    # Check payload is a JSON list of dictionaries
+    if not isinstance(payload, list) or not all(isinstance(item, dict) for item in payload):
+        return "Invalid payload: expected a list of dictionaries", 400
+    
+    # Process each item in the list
+    results = []
+    for item in payload:
         try:
-            ddata = DiffBotData(**payload)
+            ddata = DiffBotData(**item)
             queries = request.args
             tenant_id = queries.get("tenant_id", None)
             if tenant_id is None:
                 tenant_id = os.environ.get("TENANT_ID", None)
-            return ingest(ddata, tenant_id)
+            results.append(ingest(ddata, tenant_id))
         except Exception as e:
-            return f"Invalid payload: {e}", 400
+            results.append(f"Invalid payload: {e}")
+    
+    return results, 200
